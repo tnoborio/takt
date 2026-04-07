@@ -19,5 +19,7 @@ __pycache__/
 # OS
 .DS_Store
 
+data/
+
 CLAUDE.md
 docs/

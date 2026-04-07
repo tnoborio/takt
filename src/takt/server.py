@@ -141,6 +141,25 @@ async def me(user: User = Depends(get_current_user)):
     return asdict(user)
 
 
+# --- Sessions API ---
+
+@app.get("/api/sessions")
+async def list_sessions(request: Request, user: User = Depends(get_current_user)):
+    tenant = _get_tenant_for_user(request, user)
+    store = SessionStore(tenant.sessions_db_path)
+    return {"sessions": store.list_sessions(user.id)}
+
+
+@app.get("/api/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, request: Request, user: User = Depends(get_current_user)):
+    tenant = _get_tenant_for_user(request, user)
+    store = SessionStore(tenant.sessions_db_path)
+    session = store.get_session(session_id)
+    if not session or session.get("user_id") != user.id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"messages": store.get_messages(session_id)}
+
+
 # --- Chat ---
 
 @app.post("/chat", response_model=ChatResponse)
@@ -148,16 +167,21 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
     """テナントのエージェントとチャット"""
     from claude_agent_sdk import (
         query, ClaudeAgentOptions, ResultMessage, AssistantMessage, TextBlock,
+        SystemMessage,
     )
 
     tenant = _get_tenant_for_user(request, user)
     store = SessionStore(tenant.sessions_db_path)
 
-    session_id = req.session_id or store.create_session()
+    # セッション作成 or 継続
+    is_new = req.session_id is None
+    session_id = req.session_id or store.create_session(user_id=user.id)
+    session = store.get_session(session_id)
+
     model = select_model(req.task_type)
     system_prompt = tenant.get_system_prompt()
 
-    # MCP: Google連携が設定済みならMCPサーバーを追加
+    # MCP: Google連携
     mcp_servers = {}
     google_oauth_path = tenant.data_dir / "google_oauth.json"
     if google_oauth_path.exists():
@@ -171,6 +195,9 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
             },
         }
 
+    # SDK session_id で会話継続
+    sdk_session_id = session.get("sdk_session_id") if session else None
+
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system_prompt,
@@ -180,13 +207,22 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
         env={"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY},
         mcp_servers=mcp_servers if mcp_servers else {},
     )
+    # 既存セッションを継続
+    if sdk_session_id:
+        options.resume = sdk_session_id
+
+    # ユーザーメッセージを保存
+    store.add_message(session_id, "user", req.message)
 
     response_text = ""
     total_input_tokens = 0
     total_output_tokens = 0
+    new_sdk_session_id = None
 
     async for message in query(prompt=req.message, options=options):
-        if isinstance(message, AssistantMessage):
+        if isinstance(message, SystemMessage) and hasattr(message, "session_id"):
+            new_sdk_session_id = message.session_id
+        elif isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, TextBlock):
                     response_text = block.text
@@ -196,6 +232,22 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
                 total_output_tokens = message.usage.get("output_tokens", 0)
             if message.result:
                 response_text = message.result
+            if message.session_id:
+                new_sdk_session_id = message.session_id
+
+    # アシスタントメッセージを保存
+    store.add_message(session_id, "assistant", response_text)
+
+    # セッション更新（SDK session_id, title）
+    update_kwargs = {}
+    if new_sdk_session_id:
+        update_kwargs["sdk_session_id"] = new_sdk_session_id
+    if is_new and response_text:
+        # 最初のメッセージからタイトルを生成（先頭30文字）
+        title = req.message[:30] + ("..." if len(req.message) > 30 else "")
+        update_kwargs["title"] = title
+    if update_kwargs:
+        store.update_session(session_id, **update_kwargs)
 
     store.record_usage(
         session_id=session_id,

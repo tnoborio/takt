@@ -18,6 +18,7 @@ tailwind.config = {
         muted: '#737373',
         border: '#e6e6e6',
         surface: '#fafafa',
+        sidebar: '#f0f0ee',
       },
       fontFamily: {
         heading: ['Montserrat', 'Noto Sans JP', 'sans-serif'],
@@ -31,55 +32,71 @@ tailwind.config = {
 }
 </script>
 </head>
-<body class="bg-surface font-body text-foreground h-screen flex flex-col">
+<body class="bg-surface font-body text-foreground h-screen flex overflow-hidden">
 
-<!-- Header -->
-<header class="px-6 py-3.5 border-b border-border bg-white flex items-center justify-between shrink-0">
-  <div class="flex items-center gap-2">
-    <svg viewBox="0 0 40 48" fill="none" class="h-5 w-auto">
-      <line x1="4" y1="3" x2="14" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
-      <line x1="12" y1="1" x2="16.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
-      <line x1="20" y1="0" x2="20" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
-      <line x1="28" y1="1" x2="23.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
-      <line x1="36" y1="3" x2="26" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
-    </svg>
-    <span class="font-heading font-semibold tracking-tight">Takt</span>
-    <span class="text-xs text-muted hidden sm:inline">AI Chief of Staff</span>
-  </div>
-  <div class="flex items-center gap-3 text-sm">
-    <a href="/admin" id="admin-link" class="text-muted hover:text-foreground transition hidden">Admin</a>
-    <span class="text-muted" id="user-info"></span>
-    <button onclick="logout()" class="px-3 py-1.5 border border-border rounded-lg text-xs text-muted hover:text-foreground hover:border-foreground/20 transition">Logout</button>
-  </div>
-</header>
-
-<!-- Chat -->
-<div id="chat" class="flex-1 overflow-y-auto px-4 py-6 space-y-4"></div>
-
-<!-- Input -->
-<div class="border-t border-border bg-white px-4 py-4 shrink-0">
-  <div class="max-w-3xl mx-auto flex gap-3">
-    <textarea id="msg" placeholder="メッセージを入力..." rows="1" onkeydown="handleKey(event)"
-      class="flex-1 px-4 py-3 border border-border rounded-xl text-sm font-body resize-none leading-relaxed min-h-[48px] max-h-[160px] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"></textarea>
-    <button id="send-btn" onclick="send()"
-      class="px-5 py-3 bg-gradient-to-r from-emerald-500 to-primary text-white rounded-xl text-sm font-medium shadow-soft hover:shadow-lg transition-all duration-200 self-end disabled:opacity-50 disabled:cursor-not-allowed">
-      Send
+<!-- Sidebar -->
+<aside id="sidebar" class="w-64 bg-sidebar border-r border-border flex flex-col shrink-0 h-screen">
+  <div class="p-4 border-b border-border">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-2">
+        <svg viewBox="0 0 40 48" fill="none" class="h-5 w-auto">
+          <line x1="4" y1="3" x2="14" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+          <line x1="12" y1="1" x2="16.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+          <line x1="20" y1="0" x2="20" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+          <line x1="28" y1="1" x2="23.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+          <line x1="36" y1="3" x2="26" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+        </svg>
+        <span class="font-heading font-semibold tracking-tight text-sm">Takt</span>
+      </div>
+    </div>
+    <button onclick="newChat()" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-sm text-foreground hover:bg-surface transition flex items-center gap-2">
+      <span class="text-lg leading-none">+</span> New Chat
     </button>
   </div>
-</div>
+  <div id="session-list" class="flex-1 overflow-y-auto p-2 space-y-0.5"></div>
+  <div class="p-3 border-t border-border text-xs text-muted">
+    <div class="flex items-center justify-between">
+      <span id="user-info"></span>
+      <div class="flex gap-2">
+        <a href="/admin" id="admin-link" class="hover:text-foreground transition hidden">Admin</a>
+        <button onclick="logout()" class="hover:text-foreground transition">Logout</button>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="flex-1 flex flex-col h-screen min-w-0">
+  <!-- Chat -->
+  <div id="chat" class="flex-1 overflow-y-auto px-4 py-6 space-y-4"></div>
+
+  <!-- Input -->
+  <div class="border-t border-border bg-white px-4 py-4 shrink-0">
+    <div class="max-w-3xl mx-auto flex gap-3">
+      <textarea id="msg" placeholder="メッセージを入力... (⌘+Enter で送信)" rows="1" onkeydown="handleKey(event)"
+        class="flex-1 px-4 py-3 border border-border rounded-xl text-sm font-body resize-none leading-relaxed min-h-[48px] max-h-[160px] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"></textarea>
+      <button id="send-btn" onclick="send()"
+        class="px-5 py-3 bg-gradient-to-r from-emerald-500 to-primary text-white rounded-xl text-sm font-medium shadow-soft hover:shadow-lg transition-all duration-200 self-end disabled:opacity-50 disabled:cursor-not-allowed">
+        Send
+      </button>
+    </div>
+  </div>
+</main>
 
 <script>
 let sessionId = null;
+let currentUser = null;
 
 async function init() {
   try {
     const res = await fetch("/auth/me");
     if (!res.ok) { window.location.href = "/login"; return; }
-    const user = await res.json();
-    document.getElementById("user-info").textContent = user.display_name;
-    if (user.role === "platform_admin" || user.role === "tenant_admin") {
+    currentUser = await res.json();
+    document.getElementById("user-info").textContent = currentUser.display_name;
+    if (currentUser.role === "platform_admin" || currentUser.role === "tenant_admin") {
       document.getElementById("admin-link").classList.remove("hidden");
     }
+    await loadSessions();
     document.getElementById("msg").focus();
   } catch { window.location.href = "/login"; }
 }
@@ -89,8 +106,46 @@ async function logout() {
   window.location.href = "/login";
 }
 
+async function loadSessions() {
+  const res = await fetch("/api/sessions");
+  if (!res.ok) return;
+  const data = await res.json();
+  const list = document.getElementById("session-list");
+  list.innerHTML = data.sessions.map(s => {
+    const active = s.session_id === sessionId;
+    const title = s.title || "New Chat";
+    const date = s.last_active ? s.last_active.split("T")[0] : "";
+    return `<button onclick="loadSession('${s.session_id}')"
+      class="w-full text-left px-3 py-2 rounded-lg text-sm truncate transition ${active ? 'bg-white shadow-soft font-medium' : 'hover:bg-white/60 text-muted'}">
+      <div class="truncate">${escapeHtml(title)}</div>
+      <div class="text-[10px] text-muted mt-0.5">${date}</div>
+    </button>`;
+  }).join("");
+}
+
+async function loadSession(sid) {
+  sessionId = sid;
+  const chat = document.getElementById("chat");
+  chat.innerHTML = "";
+  const res = await fetch(`/api/sessions/${sid}/messages`);
+  if (!res.ok) return;
+  const data = await res.json();
+  for (const m of data.messages) {
+    addMessage(m.role, m.role === "user" ? m.content : mdToHtml(m.content));
+  }
+  await loadSessions();
+  document.getElementById("msg").focus();
+}
+
+function newChat() {
+  sessionId = null;
+  document.getElementById("chat").innerHTML = "";
+  loadSessions();
+  document.getElementById("msg").focus();
+}
+
 function handleKey(e) {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
   const ta = e.target;
   setTimeout(() => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; }, 0);
 }
@@ -102,7 +157,7 @@ function addMessage(role, html) {
   if (role === "user") {
     div.innerHTML = `<div class="bg-white border border-border rounded-xl px-5 py-3.5 text-sm leading-relaxed">${escapeHtml(html)}</div>`;
   } else {
-    div.innerHTML = `<div class="px-5 py-3.5"><div class="text-[10px] font-semibold text-primary uppercase tracking-widest mb-1.5">Takt</div><div class="text-sm leading-relaxed prose-takt">${html}</div></div>`;
+    div.innerHTML = `<div class="px-5 py-3.5"><div class="text-[10px] font-semibold text-primary uppercase tracking-widest mb-1.5">Takt</div><div class="text-sm leading-relaxed">${html}</div></div>`;
   }
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
@@ -157,6 +212,7 @@ async function send() {
     const data = await res.json();
     sessionId = data.session_id;
     addMessage("assistant", mdToHtml(data.response));
+    await loadSessions();
   } catch (e) {
     thinking.remove();
     addMessage("assistant", `<p class="text-red-500">Error: ${e.message}</p>`);
