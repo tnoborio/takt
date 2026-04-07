@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Takt — Admin</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        primary: '#25a18e',
+        'primary-dark': '#1e8a79',
+        foreground: '#171717',
+        muted: '#737373',
+        border: '#e6e6e6',
+        surface: '#fafafa',
+      },
+      fontFamily: {
+        heading: ['Montserrat', 'Noto Sans JP', 'sans-serif'],
+        body: ['Noto Sans JP', 'sans-serif'],
+      },
+      boxShadow: {
+        soft: '0 2px 15px -3px rgba(0,0,0,0.07), 0 10px 20px -2px rgba(0,0,0,0.04)',
+      },
+    }
+  }
+}
+</script>
+</head>
+<body class="bg-surface font-body text-foreground min-h-screen">
+
+<!-- Header -->
+<header class="px-6 py-3.5 border-b border-border bg-white flex items-center justify-between sticky top-0 z-10">
+  <div class="flex items-center gap-2">
+    <svg viewBox="0 0 40 48" fill="none" class="h-5 w-auto">
+      <line x1="4" y1="3" x2="14" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="12" y1="1" x2="16.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="20" y1="0" x2="20" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="28" y1="1" x2="23.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="36" y1="3" x2="26" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+    </svg>
+    <span class="font-heading font-semibold tracking-tight">Takt</span>
+    <span class="text-xs text-muted">Admin</span>
+  </div>
+  <div class="flex items-center gap-3 text-sm">
+    <a href="/" class="text-muted hover:text-foreground transition">Chat</a>
+    <span class="text-muted" id="user-info"></span>
+    <button onclick="logout()" class="px-3 py-1.5 border border-border rounded-lg text-xs text-muted hover:text-foreground hover:border-foreground/20 transition">Logout</button>
+  </div>
+</header>
+
+<div class="max-w-4xl mx-auto px-4 py-8 space-y-6">
+
+  <!-- Tenants (platform_admin only) -->
+  <div id="tenants-section" class="hidden">
+    <div class="bg-white rounded-xl shadow-soft p-6">
+      <h2 class="font-heading font-semibold text-base mb-4">Tenants</h2>
+      <div id="tenant-msg" class="text-sm rounded-lg px-3 py-2 mb-3 hidden"></div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b-2 border-border">
+              <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">ID</th>
+              <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Name</th>
+              <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Status</th>
+              <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Created</th>
+            </tr>
+          </thead>
+          <tbody id="tenants-body"></tbody>
+        </table>
+      </div>
+      <h3 class="font-heading font-medium text-sm mt-6 mb-3">Create Tenant</h3>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <input id="t-id" placeholder="tenant-id" class="input-field" />
+        <input id="t-name" placeholder="Company Name" class="input-field" />
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <input id="t-email" placeholder="Admin Email" class="input-field" />
+        <input id="t-password" type="password" placeholder="Admin Password" class="input-field" />
+        <input id="t-admin-name" placeholder="Admin Name" class="input-field" />
+      </div>
+      <button onclick="createTenant()" class="btn-primary mt-3">Create Tenant</button>
+    </div>
+  </div>
+
+  <!-- Users -->
+  <div class="bg-white rounded-xl shadow-soft p-6">
+    <h2 class="font-heading font-semibold text-base mb-4">Users</h2>
+    <div id="user-msg" class="text-sm rounded-lg px-3 py-2 mb-3 hidden"></div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b-2 border-border">
+            <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Name</th>
+            <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Email</th>
+            <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Tenant</th>
+            <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Role</th>
+            <th class="text-left px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-widest">Status</th>
+            <th class="px-3 py-2"></th>
+          </tr>
+        </thead>
+        <tbody id="users-body"></tbody>
+      </table>
+    </div>
+    <h3 class="font-heading font-medium text-sm mt-6 mb-3">Add User</h3>
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <input id="u-tenant" placeholder="tenant-id" class="input-field" />
+      <input id="u-email" placeholder="Email" class="input-field" />
+      <input id="u-password" type="password" placeholder="Password" class="input-field" />
+      <input id="u-name" placeholder="Display Name" class="input-field" />
+      <select id="u-role" class="input-field">
+        <option value="user">User</option>
+        <option value="tenant_admin">Tenant Admin</option>
+      </select>
+      <button onclick="createUser()" class="btn-primary">Add User</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .input-field { @apply px-3 py-2 border border-border rounded-lg text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition; }
+  .btn-primary { @apply px-4 py-2 bg-gradient-to-r from-emerald-500 to-primary text-white rounded-lg text-sm font-medium shadow-soft hover:shadow-lg transition-all duration-200; }
+  .badge { @apply inline-block px-2 py-0.5 rounded text-[11px] font-semibold; }
+  .badge-platform { @apply bg-pink-50 text-pink-700; }
+  .badge-admin { @apply bg-amber-50 text-amber-700; }
+  .badge-user { @apply bg-sky-50 text-sky-700; }
+  .badge-active { @apply bg-emerald-50 text-emerald-700; }
+  .badge-inactive { @apply bg-red-50 text-red-700; }
+  .btn-toggle { @apply px-2.5 py-1 rounded text-[11px] font-medium transition; }
+</style>
+
+<script>
+let currentUser = null;
+
+async function init() {
+  try {
+    const res = await fetch("/auth/me");
+    if (!res.ok) { window.location.href = "/login"; return; }
+    currentUser = await res.json();
+    document.getElementById("user-info").textContent = `${currentUser.display_name} (${currentUser.role})`;
+    if (currentUser.role === "platform_admin") {
+      document.getElementById("tenants-section").classList.remove("hidden");
+      loadTenants();
+    }
+    if (currentUser.role === "tenant_admin") {
+      const ti = document.getElementById("u-tenant");
+      ti.value = currentUser.tenant_id; ti.readOnly = true;
+      ti.classList.add("bg-surface");
+    }
+    loadUsers();
+  } catch { window.location.href = "/login"; }
+}
+
+async function loadTenants() {
+  const res = await fetch("/api/admin/tenants");
+  const data = await res.json();
+  document.getElementById("tenants-body").innerHTML = data.tenants.map(t => `
+    <tr class="border-b border-border/50 hover:bg-surface/50">
+      <td class="px-3 py-2.5 font-mono text-xs">${t.id}</td>
+      <td class="px-3 py-2.5">${t.name}</td>
+      <td class="px-3 py-2.5"><span class="badge ${t.is_active ? 'badge-active' : 'badge-inactive'}">${t.is_active ? 'Active' : 'Inactive'}</span></td>
+      <td class="px-3 py-2.5 text-muted text-xs">${t.created_at ? t.created_at.split('T')[0] : ''}</td>
+    </tr>`).join("");
+}
+
+async function loadUsers() {
+  const res = await fetch("/api/admin/users");
+  const data = await res.json();
+  document.getElementById("users-body").innerHTML = data.users.map(u => {
+    const roleBadge = u.role === "platform_admin" ? "badge-platform" : u.role === "tenant_admin" ? "badge-admin" : "badge-user";
+    const toggleLabel = u.is_active ? "Deactivate" : "Activate";
+    const toggleCls = u.is_active ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-emerald-50 text-emerald-600 hover:bg-emerald-100";
+    return `
+    <tr class="border-b border-border/50 hover:bg-surface/50">
+      <td class="px-3 py-2.5 font-medium">${u.display_name}</td>
+      <td class="px-3 py-2.5 text-muted">${u.email}</td>
+      <td class="px-3 py-2.5 font-mono text-xs">${u.tenant_id}</td>
+      <td class="px-3 py-2.5"><span class="badge ${roleBadge}">${u.role}</span></td>
+      <td class="px-3 py-2.5"><span class="badge ${u.is_active ? 'badge-active' : 'badge-inactive'}">${u.is_active ? 'Active' : 'Inactive'}</span></td>
+      <td class="px-3 py-2.5"><button class="btn-toggle ${toggleCls}" onclick="toggleUser('${u.id}', ${!u.is_active})">${toggleLabel}</button></td>
+    </tr>`;
+  }).join("");
+}
+
+function showMsg(id, text, ok) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = `text-sm rounded-lg px-3 py-2 mb-3 ${ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`;
+  el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("hidden"), 4000);
+}
+
+async function createTenant() {
+  const body = {
+    tenant_id: document.getElementById("t-id").value,
+    name: document.getElementById("t-name").value,
+    admin_email: document.getElementById("t-email").value,
+    admin_password: document.getElementById("t-password").value,
+    admin_name: document.getElementById("t-admin-name").value,
+  };
+  const res = await fetch("/api/admin/tenants", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+  if (res.ok) {
+    showMsg("tenant-msg", "Tenant created", true);
+    loadTenants(); loadUsers();
+    ["t-id","t-name","t-email","t-password","t-admin-name"].forEach(id => document.getElementById(id).value = "");
+  } else { const err = await res.json(); showMsg("tenant-msg", err.detail || "Error", false); }
+}
+
+async function createUser() {
+  const body = {
+    tenant_id: document.getElementById("u-tenant").value,
+    email: document.getElementById("u-email").value,
+    password: document.getElementById("u-password").value,
+    display_name: document.getElementById("u-name").value,
+    role: document.getElementById("u-role").value,
+  };
+  const res = await fetch("/api/admin/users", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+  if (res.ok) {
+    showMsg("user-msg", "User created", true);
+    loadUsers();
+    ["u-email","u-password","u-name"].forEach(id => document.getElementById(id).value = "");
+  } else { const err = await res.json(); showMsg("user-msg", err.detail || "Error", false); }
+}
+
+async function toggleUser(userId, active) {
+  await fetch(`/api/admin/users/${userId}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ is_active: active }) });
+  loadUsers();
+}
+
+async function logout() {
+  await fetch("/auth/logout", { method: "POST" });
+  window.location.href = "/login";
+}
+
+init();
+</script>
+</body>
+</html>

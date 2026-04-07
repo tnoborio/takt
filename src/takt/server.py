@@ -2,13 +2,17 @@
 
 import os
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .auth import get_current_tenant
+from .auth import get_current_user, require_role
+from .db import PlatformDB, User, verify_password
 from .tenant import Tenant, TenantManager
 from .session import SessionStore
 from .model_router import select_model
@@ -18,10 +22,13 @@ load_dotenv()
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 DATA_DIR = Path(os.environ.get("TAKT_DATA_DIR", "./data/tenants"))
+PLATFORM_DB_PATH = Path(os.environ.get("TAKT_PLATFORM_DB", "./data/platform.db"))
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.platform_db = PlatformDB(PLATFORM_DB_PATH)
     app.state.tenant_manager = TenantManager(DATA_DIR)
     yield
 
@@ -43,88 +50,295 @@ class ChatResponse(BaseModel):
     model: str
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
 class TenantCreateRequest(BaseModel):
     tenant_id: str
     name: str
-    api_key: str
+    admin_email: str
+    admin_password: str
+    admin_name: str
 
 
-# --- Routes ---
+class UserCreateRequest(BaseModel):
+    tenant_id: str
+    email: str
+    password: str
+    display_name: str
+    role: str = "user"
+
+
+class UserUpdateRequest(BaseModel):
+    display_name: str | None = None
+    role: str | None = None
+    is_active: bool | None = None
+    password: str | None = None
+
+
+# --- Helper ---
+
+def _get_tenant_for_user(request: Request, user: User) -> Tenant:
+    tm: TenantManager = request.app.state.tenant_manager
+    tenant = tm.get(user.tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=500, detail="Tenant not found")
+    return tenant
+
+
+# --- Health ---
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "takt"}
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, tenant: Tenant = Depends(get_current_tenant)):
-    """テナントのエージェントとチャット"""
-    import claude_agent_sdk as sdk
+# --- Auth routes ---
 
+@app.post("/auth/login")
+async def login(req: LoginRequest, request: Request):
+    db: PlatformDB = request.app.state.platform_db
+    result = db.get_user_by_email(req.email)
+    if not result:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    user, pw_hash = result
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="Account is inactive")
+    if not verify_password(req.password, pw_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = db.create_auth_session(user.id)
+
+    redirect = "/admin" if user.role in ("platform_admin", "tenant_admin") else "/"
+    response = JSONResponse({"user": asdict(user), "redirect": redirect})
+    response.set_cookie(
+        key="takt_session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=7 * 24 * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.post("/auth/logout")
+async def logout(request: Request):
+    db: PlatformDB = request.app.state.platform_db
+    token = request.cookies.get("takt_session")
+    if token:
+        db.delete_auth_session(token)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("takt_session", path="/")
+    return response
+
+
+@app.get("/auth/me")
+async def me(user: User = Depends(get_current_user)):
+    return asdict(user)
+
+
+# --- Chat ---
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest, request: Request, user: User = Depends(get_current_user)):
+    """テナントのエージェントとチャット"""
+    from claude_agent_sdk import (
+        query, ClaudeAgentOptions, ResultMessage, AssistantMessage, TextBlock,
+    )
+
+    tenant = _get_tenant_for_user(request, user)
     store = SessionStore(tenant.sessions_db_path)
 
     session_id = req.session_id or store.create_session()
     model = select_model(req.task_type)
     system_prompt = tenant.get_system_prompt()
 
-    # Claude Agent SDK でエージェント実行
-    agent = sdk.Agent(
+    options = ClaudeAgentOptions(
         model=model,
         system_prompt=system_prompt,
-        api_key=ANTHROPIC_API_KEY,
+        permission_mode="bypassPermissions",
+        cwd=str(tenant.data_dir),
+        max_turns=3,
+        env={"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY},
     )
-    result = agent.run(req.message)
 
-    # 利用量記録
-    if hasattr(result, "usage"):
-        store.record_usage(
-            session_id=session_id,
-            model=model,
-            input_tokens=result.usage.get("input_tokens", 0),
-            output_tokens=result.usage.get("output_tokens", 0),
-        )
+    response_text = ""
+    total_input_tokens = 0
+    total_output_tokens = 0
+
+    async for message in query(prompt=req.message, options=options):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    response_text = block.text
+        elif isinstance(message, ResultMessage):
+            if message.usage:
+                total_input_tokens = message.usage.get("input_tokens", 0)
+                total_output_tokens = message.usage.get("output_tokens", 0)
+            if message.result:
+                response_text = message.result
+
+    store.record_usage(
+        session_id=session_id,
+        model=model,
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+    )
 
     return ChatResponse(
-        response=result.text if hasattr(result, "text") else str(result),
+        response=response_text,
         session_id=session_id,
         model=model,
     )
 
 
-@app.get("/tenants")
-async def list_tenants():
-    """テナント一覧（管理用）"""
-    from fastapi import Request
+# --- Admin API: Tenants ---
 
-    # 簡易実装: 全テナントを返す（本番では管理者認証が必要）
-    return {"tenants": []}
+@app.get("/api/admin/tenants")
+async def admin_list_tenants(request: Request, user: User = Depends(require_role("platform_admin"))):
+    db: PlatformDB = request.app.state.platform_db
+    tenants = db.list_tenants()
+    return {"tenants": [asdict(t) for t in tenants]}
 
 
-@app.post("/tenants")
-async def create_tenant(req: TenantCreateRequest):
-    """テナント作成（管理用）"""
-    from fastapi import Request
-    # lifespan で初期化された tenant_manager を使う
-    # 注: 本番では管理者認証が必要
-    return {"status": "created", "tenant_id": req.tenant_id}
+@app.post("/api/admin/tenants")
+async def admin_create_tenant(req: TenantCreateRequest, request: Request, user: User = Depends(require_role("platform_admin"))):
+    db: PlatformDB = request.app.state.platform_db
+    tm: TenantManager = request.app.state.tenant_manager
 
+    # DB にテナント作成
+    db.create_tenant(req.tenant_id, req.name)
+    # ファイルシステムにテナントディレクトリ作成
+    tm.create_tenant(req.tenant_id, req.name, api_key=f"takt-{req.tenant_id}")
+    # テナント管理者ユーザー作成
+    admin_user = db.create_user(
+        tenant_id=req.tenant_id,
+        email=req.admin_email,
+        password=req.admin_password,
+        display_name=req.admin_name,
+        role="tenant_admin",
+    )
+
+    return {"tenant_id": req.tenant_id, "admin_user": asdict(admin_user)}
+
+
+@app.patch("/api/admin/tenants/{tenant_id}")
+async def admin_update_tenant(tenant_id: str, body: dict, request: Request, user: User = Depends(require_role("platform_admin"))):
+    db: PlatformDB = request.app.state.platform_db
+    db.update_tenant(tenant_id, name=body.get("name"), is_active=body.get("is_active"))
+    return {"ok": True}
+
+
+# --- Admin API: Users ---
+
+@app.get("/api/admin/users")
+async def admin_list_users(request: Request, user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    db: PlatformDB = request.app.state.platform_db
+    if user.role == "platform_admin":
+        users = db.list_users()
+    else:
+        users = db.list_users(tenant_id=user.tenant_id)
+    return {"users": [asdict(u) for u in users]}
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(req: UserCreateRequest, request: Request, user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    db: PlatformDB = request.app.state.platform_db
+
+    # tenant_admin は自テナントのみ、platform_admin は作成不可
+    if user.role == "tenant_admin":
+        if req.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot create users in other tenants")
+        if req.role == "platform_admin":
+            raise HTTPException(status_code=403, detail="Cannot create platform admins")
+
+    new_user = db.create_user(
+        tenant_id=req.tenant_id,
+        email=req.email,
+        password=req.password,
+        display_name=req.display_name,
+        role=req.role,
+    )
+    return asdict(new_user)
+
+
+@app.patch("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: str, req: UserUpdateRequest, request: Request, user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    db: PlatformDB = request.app.state.platform_db
+
+    target = db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # tenant_admin は自テナントのみ
+    if user.role == "tenant_admin" and target.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot modify users in other tenants")
+    if user.role == "tenant_admin" and req.role == "platform_admin":
+        raise HTTPException(status_code=403, detail="Cannot promote to platform admin")
+
+    db.update_user(user_id, display_name=req.display_name, role=req.role, is_active=req.is_active, password=req.password)
+    return {"ok": True}
+
+
+# --- Files (authenticated) ---
 
 @app.get("/files")
-async def list_files(path: str = ".", tenant: Tenant = Depends(get_current_tenant)):
+async def list_files(path: str = ".", request: Request = None, user: User = Depends(get_current_user)):
+    tenant = _get_tenant_for_user(request, user)
     files = tenant_tools.list_files(tenant.data_dir, path)
     return {"files": files}
 
 
 @app.get("/files/{path:path}")
-async def read_file(path: str, tenant: Tenant = Depends(get_current_tenant)):
+async def read_file(path: str, request: Request, user: User = Depends(get_current_user)):
+    tenant = _get_tenant_for_user(request, user)
     content = tenant_tools.read_file(tenant.data_dir, path)
     return {"path": path, "content": content}
 
 
 @app.put("/files/{path:path}")
-async def write_file(path: str, body: dict, tenant: Tenant = Depends(get_current_tenant)):
+async def write_file(path: str, body: dict, request: Request, user: User = Depends(get_current_user)):
+    tenant = _get_tenant_for_user(request, user)
     result = tenant_tools.write_file(tenant.data_dir, path, body["content"])
     return {"result": result}
+
+
+# --- UI ---
+
+@app.get("/login")
+async def login_page(request: Request):
+    # Already logged in → redirect
+    token = request.cookies.get("takt_session")
+    if token:
+        db: PlatformDB = request.app.state.platform_db
+        session = db.get_auth_session(token)
+        if session:
+            return RedirectResponse("/")
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@app.get("/admin")
+async def admin_page(user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    return FileResponse(STATIC_DIR / "admin.html")
+
+
+@app.get("/")
+async def index(request: Request):
+    token = request.cookies.get("takt_session")
+    if not token:
+        return RedirectResponse("/login")
+    db: PlatformDB = request.app.state.platform_db
+    session = db.get_auth_session(token)
+    if not session:
+        return RedirectResponse("/login")
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # --- エントリポイント ---

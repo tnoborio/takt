@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Takt</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        primary: '#25a18e',
+        'primary-dark': '#1e8a79',
+        foreground: '#171717',
+        muted: '#737373',
+        border: '#e6e6e6',
+        surface: '#fafafa',
+      },
+      fontFamily: {
+        heading: ['Montserrat', 'Noto Sans JP', 'sans-serif'],
+        body: ['Noto Sans JP', 'sans-serif'],
+      },
+      boxShadow: {
+        soft: '0 2px 15px -3px rgba(0,0,0,0.07), 0 10px 20px -2px rgba(0,0,0,0.04)',
+      },
+    }
+  }
+}
+</script>
+</head>
+<body class="bg-surface font-body text-foreground h-screen flex flex-col">
+
+<!-- Header -->
+<header class="px-6 py-3.5 border-b border-border bg-white flex items-center justify-between shrink-0">
+  <div class="flex items-center gap-2">
+    <svg viewBox="0 0 40 48" fill="none" class="h-5 w-auto">
+      <line x1="4" y1="3" x2="14" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="12" y1="1" x2="16.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="20" y1="0" x2="20" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="28" y1="1" x2="23.5" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+      <line x1="36" y1="3" x2="26" y2="46" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+    </svg>
+    <span class="font-heading font-semibold tracking-tight">Takt</span>
+    <span class="text-xs text-muted hidden sm:inline">AI Chief of Staff</span>
+  </div>
+  <div class="flex items-center gap-3 text-sm">
+    <a href="/admin" id="admin-link" class="text-muted hover:text-foreground transition hidden">Admin</a>
+    <span class="text-muted" id="user-info"></span>
+    <button onclick="logout()" class="px-3 py-1.5 border border-border rounded-lg text-xs text-muted hover:text-foreground hover:border-foreground/20 transition">Logout</button>
+  </div>
+</header>
+
+<!-- Chat -->
+<div id="chat" class="flex-1 overflow-y-auto px-4 py-6 space-y-4"></div>
+
+<!-- Input -->
+<div class="border-t border-border bg-white px-4 py-4 shrink-0">
+  <div class="max-w-3xl mx-auto flex gap-3">
+    <textarea id="msg" placeholder="メッセージを入力..." rows="1" onkeydown="handleKey(event)"
+      class="flex-1 px-4 py-3 border border-border rounded-xl text-sm font-body resize-none leading-relaxed min-h-[48px] max-h-[160px] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"></textarea>
+    <button id="send-btn" onclick="send()"
+      class="px-5 py-3 bg-gradient-to-r from-emerald-500 to-primary text-white rounded-xl text-sm font-medium shadow-soft hover:shadow-lg transition-all duration-200 self-end disabled:opacity-50 disabled:cursor-not-allowed">
+      Send
+    </button>
+  </div>
+</div>
+
+<script>
+let sessionId = null;
+
+async function init() {
+  try {
+    const res = await fetch("/auth/me");
+    if (!res.ok) { window.location.href = "/login"; return; }
+    const user = await res.json();
+    document.getElementById("user-info").textContent = user.display_name;
+    if (user.role === "platform_admin" || user.role === "tenant_admin") {
+      document.getElementById("admin-link").classList.remove("hidden");
+    }
+    document.getElementById("msg").focus();
+  } catch { window.location.href = "/login"; }
+}
+
+async function logout() {
+  await fetch("/auth/logout", { method: "POST" });
+  window.location.href = "/login";
+}
+
+function handleKey(e) {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  const ta = e.target;
+  setTimeout(() => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; }, 0);
+}
+
+function addMessage(role, html) {
+  const chat = document.getElementById("chat");
+  const div = document.createElement("div");
+  div.className = "max-w-3xl mx-auto w-full";
+  if (role === "user") {
+    div.innerHTML = `<div class="bg-white border border-border rounded-xl px-5 py-3.5 text-sm leading-relaxed">${escapeHtml(html)}</div>`;
+  } else {
+    div.innerHTML = `<div class="px-5 py-3.5"><div class="text-[10px] font-semibold text-primary uppercase tracking-widest mb-1.5">Takt</div><div class="text-sm leading-relaxed prose-takt">${html}</div></div>`;
+  }
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function escapeHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function mdToHtml(md) {
+  let html = md
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre class="bg-foreground/5 rounded-lg p-3 overflow-x-auto text-xs my-2"><code>${code.trim()}</code></pre>`)
+    .replace(/`([^`]+)`/g, '<code class="bg-foreground/5 px-1.5 py-0.5 rounded text-xs">$1</code>')
+    .replace(/^### (.+)$/gm, '<h3 class="font-heading font-semibold text-sm mt-3 mb-1">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 class="font-heading font-semibold text-base mt-4 mb-1.5">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 class="font-heading font-bold text-lg mt-4 mb-2">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, "<strong class='font-semibold'>$1</strong>")
+    .replace(/^---$/gm, '<hr class="border-border my-3">')
+    .replace(/^- (.+)$/gm, "<li class='ml-4 list-disc'>$1</li>")
+    .replace(/^\d+\. (.+)$/gm, "<li class='ml-4 list-decimal'>$1</li>");
+  html = html.replace(/((?:<li[^>]*>.*<\/li>\n?)+)/g, "<ul class='my-1.5 space-y-0.5'>$1</ul>");
+  html = html.split("\n\n").map(block => {
+    if (block.startsWith("<")) return block;
+    return "<p class='my-1.5'>" + block.replace(/\n/g, "<br>") + "</p>";
+  }).join("\n");
+  return html;
+}
+
+async function send() {
+  const input = document.getElementById("msg");
+  const btn = document.getElementById("send-btn");
+  const text = input.value.trim();
+  if (!text) return;
+  addMessage("user", text);
+  input.value = ""; input.style.height = "auto";
+  btn.disabled = true; input.disabled = true;
+
+  const thinking = document.createElement("div");
+  thinking.className = "max-w-3xl mx-auto w-full px-5 py-3 text-muted text-sm italic";
+  thinking.textContent = "考え中...";
+  document.getElementById("chat").appendChild(thinking);
+
+  try {
+    const body = { message: text };
+    if (sessionId) body.session_id = sessionId;
+    const res = await fetch("/chat", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    thinking.remove();
+    if (!res.ok) {
+      const err = await res.text();
+      addMessage("assistant", `<p class="text-red-500">Error: ${res.status} ${err}</p>`);
+      return;
+    }
+    const data = await res.json();
+    sessionId = data.session_id;
+    addMessage("assistant", mdToHtml(data.response));
+  } catch (e) {
+    thinking.remove();
+    addMessage("assistant", `<p class="text-red-500">Error: ${e.message}</p>`);
+  } finally { btn.disabled = false; input.disabled = false; input.focus(); }
+}
+
+init();
+</script>
+</body>
+</html>
