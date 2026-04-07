@@ -1,0 +1,22 @@
+# Data
+data/tenants/*/
+!data/tenants/.template/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Environment
+.env
+*.pem
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+CLAUDE.md

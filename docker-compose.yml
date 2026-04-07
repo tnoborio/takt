@@ -1,0 +1,16 @@
+services:
+  takt:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/tenants:/data/tenants
+      - ./src:/app/src
+      - ./templates:/app/templates
+    env_file:
+      - .env
+    environment:
+      - TAKT_DATA_DIR=/data/tenants
+    restart: unless-stopped
