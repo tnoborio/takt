@@ -157,13 +157,28 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
     model = select_model(req.task_type)
     system_prompt = tenant.get_system_prompt()
 
+    # MCP: Google連携が設定済みならMCPサーバーを追加
+    mcp_servers = {}
+    google_oauth_path = tenant.data_dir / "google_oauth.json"
+    if google_oauth_path.exists():
+        mcp_servers["google"] = {
+            "command": "/usr/local/bin/fastmcp-gsuite",
+            "cwd": str(tenant.data_dir),
+            "env": {
+                "GAUTH_FILE": ".gauth.json",
+                "ACCOUNTS_FILE": ".accounts.json",
+                "CREDENTIALS_DIR": ".",
+            },
+        }
+
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
         cwd=str(tenant.data_dir),
-        max_turns=3,
+        max_turns=5,
         env={"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY},
+        mcp_servers=mcp_servers if mcp_servers else {},
     )
 
     response_text = ""
@@ -231,6 +246,131 @@ async def admin_update_tenant(tenant_id: str, body: dict, request: Request, user
     db: PlatformDB = request.app.state.platform_db
     db.update_tenant(tenant_id, name=body.get("name"), is_active=body.get("is_active"))
     return {"ok": True}
+
+
+# --- Admin API: Google OAuth ---
+
+@app.get("/api/admin/tenants/{tenant_id}/google-oauth")
+async def get_google_oauth(tenant_id: str, request: Request, user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    if user.role == "tenant_admin" and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot access other tenant's config")
+    tm: TenantManager = request.app.state.tenant_manager
+    tenant = tm.get(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    oauth_path = tenant.data_dir / "google_oauth.json"
+    if oauth_path.exists():
+        import json
+        data = json.loads(oauth_path.read_text())
+        return {"configured": True, "client_id_preview": data.get("client_id", "")[:20] + "..."}
+    return {"configured": False}
+
+
+@app.put("/api/admin/tenants/{tenant_id}/google-oauth")
+async def save_google_oauth(tenant_id: str, body: dict, request: Request, user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    if user.role == "tenant_admin" and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot modify other tenant's config")
+    tm: TenantManager = request.app.state.tenant_manager
+    tenant = tm.get(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    import json
+
+    client_id = body["client_id"]
+    client_secret = body["client_secret"]
+
+    # Takt内部の設定
+    (tenant.data_dir / "google_oauth.json").write_text(json.dumps(
+        {"client_id": client_id, "client_secret": client_secret}, indent=2))
+
+    # fastmcp-gsuite 形式の .gauth.json (Google client_secrets format)
+    gauth = {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"],
+        }
+    }
+    (tenant.data_dir / ".gauth.json").write_text(json.dumps(gauth, indent=2))
+
+    return {"ok": True}
+
+
+# --- Google OAuth Authorization Flow ---
+
+@app.post("/api/admin/tenants/{tenant_id}/google-authorize")
+async def google_authorize_start(tenant_id: str, body: dict, request: Request, user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    """OAuth認可URLを取得する。body: {"email": "user@example.com"}"""
+    if user.role == "tenant_admin" and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot access other tenant")
+    tm: TenantManager = request.app.state.tenant_manager
+    tenant = tm.get(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    gauth_path = tenant.data_dir / ".gauth.json"
+    if not gauth_path.exists():
+        raise HTTPException(status_code=400, detail="Google OAuth not configured. Save client_id/secret first.")
+
+    from oauth2client.client import flow_from_clientsecrets
+    scopes = [
+        "openid",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://mail.google.com/",
+        "https://www.googleapis.com/auth/calendar",
+    ]
+    flow = flow_from_clientsecrets(str(gauth_path), " ".join(scopes), redirect_uri="urn:ietf:wg:oauth:2.0:oob")
+    flow.params["access_type"] = "offline"
+    flow.params["approval_prompt"] = "force"
+    auth_url = flow.step1_get_authorize_url()
+
+    return {"auth_url": auth_url, "email": body.get("email", "")}
+
+
+@app.post("/api/admin/tenants/{tenant_id}/google-callback")
+async def google_authorize_callback(tenant_id: str, body: dict, request: Request, user: User = Depends(require_role("platform_admin", "tenant_admin"))):
+    """認可コードを受け取ってトークンを保存。body: {"code": "...", "email": "user@example.com"}"""
+    if user.role == "tenant_admin" and user.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot access other tenant")
+    tm: TenantManager = request.app.state.tenant_manager
+    tenant = tm.get(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    import json
+    from oauth2client.client import flow_from_clientsecrets
+
+    gauth_path = tenant.data_dir / ".gauth.json"
+    email = body["email"]
+    code = body["code"]
+
+    scopes = [
+        "openid",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://mail.google.com/",
+        "https://www.googleapis.com/auth/calendar",
+    ]
+    flow = flow_from_clientsecrets(str(gauth_path), " ".join(scopes), redirect_uri="urn:ietf:wg:oauth:2.0:oob")
+    credentials = flow.step2_exchange(code)
+
+    # トークン保存
+    token_path = tenant.data_dir / f".oauth2.{email}.json"
+    token_path.write_text(credentials.to_json())
+
+    # accounts.json 更新
+    accounts_path = tenant.data_dir / ".accounts.json"
+    accounts = {"accounts": []}
+    if accounts_path.exists():
+        accounts = json.loads(accounts_path.read_text())
+
+    existing_emails = [a["email"] for a in accounts["accounts"]]
+    if email not in existing_emails:
+        accounts["accounts"].append({"email": email, "account_type": "personal", "extra_info": ""})
+    accounts_path.write_text(json.dumps(accounts, indent=2))
+
+    return {"ok": True, "email": email}
 
 
 # --- Admin API: Users ---

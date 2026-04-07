@@ -87,6 +87,40 @@ tailwind.config = {
     </div>
   </div>
 
+  <!-- Google OAuth (tenant_admin + platform_admin) -->
+  <div class="bg-white rounded-xl shadow-soft p-6">
+    <h2 class="font-heading font-semibold text-base mb-4">Google Integration</h2>
+    <div id="google-msg" class="text-sm rounded-lg px-3 py-2 mb-3 hidden"></div>
+    <p class="text-sm text-muted mb-4">Google Calendar・Gmail連携のためのOAuth設定。Google Cloud ConsoleでOAuthクライアント（デスクトップアプリ）を作成し、client_id と client_secret を入力してください。</p>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+      <input id="g-tenant" placeholder="tenant-id" class="input-field" />
+      <div></div>
+      <input id="g-client-id" placeholder="Client ID" class="input-field" />
+      <input id="g-client-secret" type="password" placeholder="Client Secret" class="input-field" />
+    </div>
+    <button onclick="saveGoogleOAuth()" class="btn-primary mt-2">Save</button>
+    <div id="google-status" class="mt-4 text-sm text-muted"></div>
+
+    <!-- OAuth Authorization -->
+    <div id="google-auth-section" class="mt-6 pt-6 border-t border-border hidden">
+      <h3 class="font-heading font-medium text-sm mb-3">Authorize Google Account</h3>
+      <p class="text-sm text-muted mb-3">OAuth設定後、Googleアカウントを認可してCalendar/Gmailにアクセスできるようにします。</p>
+      <div class="flex gap-2 mb-3">
+        <input id="g-email" placeholder="Google email address" class="input-field flex-1" />
+        <button onclick="startGoogleAuth()" class="btn-primary">Get Auth URL</button>
+      </div>
+      <div id="google-auth-flow" class="hidden">
+        <p class="text-sm mb-2">1. 以下のURLをブラウザで開いてGoogleアカウントを認可:</p>
+        <textarea id="g-auth-url" readonly class="input-field w-full h-16 text-xs mb-3"></textarea>
+        <p class="text-sm mb-2">2. 表示された認可コードを貼り付け:</p>
+        <div class="flex gap-2">
+          <input id="g-auth-code" placeholder="Authorization code" class="input-field flex-1" />
+          <button onclick="submitGoogleCode()" class="btn-primary">Authorize</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Users -->
   <div class="bg-white rounded-xl shadow-soft p-6">
     <h2 class="font-heading font-semibold text-base mb-4">Users</h2>
@@ -150,8 +184,12 @@ async function init() {
       const ti = document.getElementById("u-tenant");
       ti.value = currentUser.tenant_id; ti.readOnly = true;
       ti.classList.add("bg-surface");
+      const gi = document.getElementById("g-tenant");
+      gi.value = currentUser.tenant_id; gi.readOnly = true;
+      gi.classList.add("bg-surface");
     }
     loadUsers();
+    loadGoogleOAuth();
   } catch { window.location.href = "/login"; }
 }
 
@@ -229,6 +267,79 @@ async function createUser() {
 async function toggleUser(userId, active) {
   await fetch(`/api/admin/users/${userId}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ is_active: active }) });
   loadUsers();
+}
+
+async function loadGoogleOAuth() {
+  const tenantId = document.getElementById("g-tenant").value;
+  if (!tenantId) return;
+  const res = await fetch(`/api/admin/tenants/${tenantId}/google-oauth`);
+  const status = document.getElementById("google-status");
+  if (res.ok) {
+    const data = await res.json();
+    if (data.configured) {
+      status.innerHTML = `<span class="badge badge-active">Configured</span> Client ID: <code class="text-xs">${data.client_id_preview}</code>`;
+      document.getElementById("google-auth-section").classList.remove("hidden");
+    } else {
+      status.textContent = "Not configured";
+      document.getElementById("google-auth-section").classList.add("hidden");
+    }
+  }
+}
+
+async function startGoogleAuth() {
+  const tenantId = document.getElementById("g-tenant").value;
+  const email = document.getElementById("g-email").value;
+  if (!email) { showMsg("google-msg", "Email is required", false); return; }
+  const res = await fetch(`/api/admin/tenants/${tenantId}/google-authorize`, {
+    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ email })
+  });
+  if (res.ok) {
+    const data = await res.json();
+    document.getElementById("g-auth-url").value = data.auth_url;
+    document.getElementById("google-auth-flow").classList.remove("hidden");
+  } else {
+    const err = await res.json();
+    showMsg("google-msg", err.detail || "Error", false);
+  }
+}
+
+async function submitGoogleCode() {
+  const tenantId = document.getElementById("g-tenant").value;
+  const email = document.getElementById("g-email").value;
+  const code = document.getElementById("g-auth-code").value.trim();
+  if (!code) return;
+  const res = await fetch(`/api/admin/tenants/${tenantId}/google-callback`, {
+    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ email, code })
+  });
+  if (res.ok) {
+    showMsg("google-msg", `Google account ${email} authorized`, true);
+    document.getElementById("google-auth-flow").classList.add("hidden");
+    document.getElementById("g-email").value = "";
+    document.getElementById("g-auth-code").value = "";
+  } else {
+    const err = await res.json();
+    showMsg("google-msg", err.detail || "Authorization failed", false);
+  }
+}
+
+async function saveGoogleOAuth() {
+  const tenantId = document.getElementById("g-tenant").value;
+  const body = {
+    client_id: document.getElementById("g-client-id").value,
+    client_secret: document.getElementById("g-client-secret").value,
+  };
+  const res = await fetch(`/api/admin/tenants/${tenantId}/google-oauth`, {
+    method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body)
+  });
+  if (res.ok) {
+    showMsg("google-msg", "Google OAuth saved", true);
+    document.getElementById("g-client-id").value = "";
+    document.getElementById("g-client-secret").value = "";
+    loadGoogleOAuth();
+  } else {
+    const err = await res.json();
+    showMsg("google-msg", err.detail || "Error", false);
+  }
 }
 
 async function logout() {
