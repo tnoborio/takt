@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from .auth import get_current_user, require_role
 from .db import PlatformDB, User, verify_password
 from .tenant import Tenant, TenantManager
-from .session import SessionStore
 from .model_router import select_model
 from . import tenant_tools
 
@@ -22,13 +21,13 @@ load_dotenv()
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 DATA_DIR = Path(os.environ.get("TAKT_DATA_DIR", "./data/tenants"))
-PLATFORM_DB_PATH = Path(os.environ.get("TAKT_PLATFORM_DB", "./data/platform.db"))
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://takt:takt-dev@localhost:5432/takt")
 STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.platform_db = PlatformDB(PLATFORM_DB_PATH)
+    app.state.platform_db = PlatformDB(DATABASE_URL)
     app.state.tenant_manager = TenantManager(DATA_DIR)
     yield
 
@@ -145,19 +144,17 @@ async def me(user: User = Depends(get_current_user)):
 
 @app.get("/api/sessions")
 async def list_sessions(request: Request, user: User = Depends(get_current_user)):
-    tenant = _get_tenant_for_user(request, user)
-    store = SessionStore(tenant.sessions_db_path)
-    return {"sessions": store.list_sessions(user.id)}
+    db: PlatformDB = request.app.state.platform_db
+    return {"sessions": db.list_sessions(user.id)}
 
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, request: Request, user: User = Depends(get_current_user)):
-    tenant = _get_tenant_for_user(request, user)
-    store = SessionStore(tenant.sessions_db_path)
-    session = store.get_session(session_id)
+    db: PlatformDB = request.app.state.platform_db
+    session = db.get_session(session_id)
     if not session or session.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {"messages": store.get_messages(session_id)}
+    return {"messages": db.get_messages(session_id)}
 
 
 # --- Chat ---
@@ -171,12 +168,12 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
     )
 
     tenant = _get_tenant_for_user(request, user)
-    store = SessionStore(tenant.sessions_db_path)
+    db: PlatformDB = request.app.state.platform_db
 
     # セッション作成 or 継続
     is_new = req.session_id is None
-    session_id = req.session_id or store.create_session(user_id=user.id)
-    session = store.get_session(session_id)
+    session_id = req.session_id or db.create_session(tenant_id=user.tenant_id, user_id=user.id)
+    session = db.get_session(session_id)
 
     model = select_model(req.task_type)
     system_prompt = tenant.get_system_prompt()
@@ -212,7 +209,7 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
         options.resume = sdk_session_id
 
     # ユーザーメッセージを保存
-    store.add_message(session_id, "user", req.message)
+    db.add_message(session_id, "user", req.message)
 
     response_text = ""
     total_input_tokens = 0
@@ -236,7 +233,7 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
                 new_sdk_session_id = message.session_id
 
     # アシスタントメッセージを保存
-    store.add_message(session_id, "assistant", response_text)
+    db.add_message(session_id, "assistant", response_text)
 
     # セッション更新（SDK session_id, title）
     update_kwargs = {}
@@ -247,9 +244,9 @@ async def chat(req: ChatRequest, request: Request, user: User = Depends(get_curr
         title = req.message[:30] + ("..." if len(req.message) > 30 else "")
         update_kwargs["title"] = title
     if update_kwargs:
-        store.update_session(session_id, **update_kwargs)
+        db.update_session(session_id, **update_kwargs)
 
-    store.record_usage(
+    db.record_usage(
         session_id=session_id,
         model=model,
         input_tokens=total_input_tokens,

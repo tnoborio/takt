@@ -19,10 +19,10 @@ def main():
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
     parser.add_argument("--name", default="Platform Admin")
-    parser.add_argument("--db", default=os.environ.get("TAKT_PLATFORM_DB", "./data/platform.db"))
+    parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL", "postgresql://takt:takt-dev@localhost:5432/takt"))
     args = parser.parse_args()
 
-    db = PlatformDB(args.db)
+    db = PlatformDB(args.database_url)
 
     # "platform" テナントがなければ作成
     if not db.get_tenant("platform"):

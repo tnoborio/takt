@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
 COPY templates/ templates/
+COPY migrations/ migrations/
+COPY alembic.ini .
+COPY docker/entrypoint.sh .
 
 RUN useradd -m -s /bin/bash takt
 
@@ -26,4 +29,4 @@ EXPOSE 8000
 
 USER takt
 
-CMD ["uvicorn", "takt.server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["bash", "entrypoint.sh"]
